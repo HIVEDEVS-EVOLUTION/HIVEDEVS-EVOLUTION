@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+
+<!-- ❌ ZOOM DESATIVADO -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+<title>Open Book</title>
+
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+<style>
+:root{
+  --bg:#020617;
+  --card:#0f172a;
+  --yellow:#ffd60a;
+  --blue:#38bdf8;
+  --accent:#22c55e;
+}
+
+body{
+  margin:0;
+  font-family:sans-serif;
+  background:#020617;
+  color:#fff;
+}
+
+header{
+  text-align:center;
+  padding:15px;
+  font-size:22px;
+  background:linear-gradient(45deg,var(--yellow),var(--blue));
+  -webkit-background-clip:text;
+  color:transparent;
+}
+
+nav{
+  display:flex;
+  gap:6px;
+  padding:10px;
+}
+
+nav button{
+  flex:1;
+  padding:12px;
+  border:none;
+  border-radius:12px;
+  background:linear-gradient(45deg,var(--yellow),var(--blue));
+  color:#000;
+  font-weight:bold;
+}
+
+input,select{
+  width:100%;
+  padding:12px;
+  margin:6px 0;
+  border-radius:10px;
+  border:none;
+  background:#0f172a;
+  color:#fff;
+}
+
+/* GRID MOBILE */
+.grid{
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:10px;
+  padding:10px;
+}
+
+@media(min-width:600px){
+  .grid{ grid-template-columns:repeat(3,1fr); }
+}
+
+@media(min-width:900px){
+  .grid{ grid-template-columns:repeat(4,1fr); }
+}
+
+.card{
+  width:100%;
+  background:#0f172a;
+  border-radius:14px;
+  overflow:hidden;
+}
+
+.card img{
+  width:100%;
+  height:160px;
+  object-fit:cover;
+}
+
+.info{
+  padding:6px;
+  font-size:13px;
+}
+
+.rating{color:var(--yellow);}
+
+/* 🔵 BOTÃO AZUL */
+.download{
+  background:linear-gradient(45deg,#0ea5e9,#38bdf8);
+  color:#fff;
+  padding:8px;
+  margin:6px;
+  text-align:center;
+  border-radius:10px;
+  font-weight:bold;
+}
+
+/* efeito clique */
+.download:active{
+  transform:scale(0.95);
+  opacity:0.8;
+}
+
+.trending{
+  position:absolute;
+  background:red;
+  padding:2px 6px;
+  font-size:12px;
+}
+
+.screen{display:none;}
+.active{display:block;}
+
+#loader{
+position:fixed;
+top:0;left:0;
+width:100%;height:100%;
+background:rgba(0,0,0,.8);
+display:none;
+align-items:center;
+justify-content:center;
+flex-direction:column;
+z-index:999;
+}
+
+.spin{
+width:50px;height:50px;
+border:5px solid #333;
+border-top:5px solid yellow;
+border-radius:50%;
+animation:spin 1s linear infinite;
+}
+
+@keyframes spin{to{transform:rotate(360deg);}}
+</style>
+</head>
+
+<body>
+
+<header>📚 Open Book</header>
+
+<nav>
+  <button onclick="trocar('home')">Explorar</button>
+  <button onclick="trocar('upload')">Publicar</button>
+</nav>
+
+<input id="busca" placeholder="🔍 Buscar..." oninput="buscar()">
+
+<div id="home" class="screen active">
+  <div class="grid" id="lista"></div>
+</div>
+
+<div id="upload" class="screen">
+  <input id="titulo" placeholder="Título">
+  <input id="autor" placeholder="Autor">
+
+  <select id="publico">
+    <option>livre</option>
+    <option>jovem</option>
+    <option>adulto</option>
+  </select>
+
+  <select id="genero">
+    <option>Fantasia</option>
+    <option>Romance</option>
+    <option>Terror</option>
+    <option>Ficção</option>
+  </select>
+
+  <input type="file" id="pdf" accept="application/pdf">
+  <button onclick="uploadLivro()">🚀 Publicar</button>
+</div>
+
+<div id="loader">
+  <div class="spin"></div>
+  <p>Processando...</p>
+</div>
+
+<script>
+const firebaseConfig={
+  apiKey:"SUA_API_KEY",
+  databaseURL:"https://cintaslivro-default-rtdb.firebaseio.com/"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db=firebase.database();
+
+let livrosMap={};
+let cache=JSON.parse(localStorage.getItem("cache"))||{};
+
+function trocar(t){
+  document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
+  document.getElementById(t).classList.add("active");
+}
+
+async function gerarCapa(base64){
+  const pdf=await pdfjsLib.getDocument(base64).promise;
+  const page=await pdf.getPage(1);
+
+  const viewport=page.getViewport({scale:0.5});
+  const canvas=document.createElement("canvas");
+  const ctx=canvas.getContext("2d");
+
+  canvas.width=viewport.width;
+  canvas.height=viewport.height;
+
+  await page.render({canvasContext:ctx,viewport}).promise;
+
+  return canvas.toDataURL("image/jpeg",0.6);
+}
+
+function uploadLivro(){
+  const file=pdf.files[0];
+  if(!file) return alert("Selecione PDF");
+
+  if(file.size > 2*1024*1024){
+    return alert("PDF muito grande (máx 2MB)");
+  }
+
+  loader.style.display="flex";
+
+  const reader=new FileReader();
+
+  reader.onload=async function(e){
+    const base64=e.target.result;
+    const capa=await gerarCapa(base64);
+
+    const id=Date.now();
+
+    db.ref("livros/"+id).set({
+      id,
+      titulo:titulo.value,
+      autor:autor.value,
+      publico:publico.value,
+      genero:genero.value,
+      pdf:base64,
+      capa,
+      totalStars:0,
+      votes:0,
+      downloads:0,
+      createdAt:Date.now()
+    });
+
+    loader.style.display="none";
+    alert("Publicado 🚀");
+  };
+
+  reader.readAsDataURL(file);
+}
+
+function avaliar(id,n){
+  db.ref("livros/"+id).once("value",snap=>{
+    let l=snap.val();
+    db.ref("livros/"+id).update({
+      totalStars:(l.totalStars||0)+n,
+      votes:(l.votes||0)+1
+    });
+  });
+}
+
+function baixarLivro(id){
+  let l=livrosMap[id];
+  if(!l) return;
+
+  loader.style.display="flex";
+
+  setTimeout(()=>{
+    const arr=l.pdf.split(',');
+    const bstr=atob(arr[1]);
+
+    let n=bstr.length;
+    const u8arr=new Uint8Array(n);
+
+    while(n--) u8arr[n]=bstr.charCodeAt(n);
+
+    const blob=new Blob([u8arr],{type:"application/pdf"});
+    const url=URL.createObjectURL(blob);
+
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=l.titulo+".pdf";
+    a.click();
+
+    URL.revokeObjectURL(url);
+
+    db.ref("livros/"+id+"/downloads")
+      .transaction(v=>(v||0)+1);
+
+    loader.style.display="none";
+  },300);
+}
+
+function score(l){
+  let media=l.votes?l.totalStars/l.votes:0;
+  let tempo=(Date.now()-l.createdAt)/10000000;
+  let boost=Math.max(0,10-tempo);
+
+  return (media*2)+(l.votes*0.3)+(l.downloads*0.5)+boost;
+}
+
+function card(l,i){
+  let media=l.votes?(l.totalStars/l.votes).toFixed(1):"0.0";
+
+  return `
+  <div class="card">
+    ${i<3?`<div class="trending">🔥</div>`:""}
+    <img src="${l.capa}">
+    <div class="info">
+      <b>${l.titulo}</b><br>
+      ${l.autor}<br>
+      ${l.publico} • ${l.genero}<br>
+      <div class="rating">⭐ ${media}</div>
+    </div>
+
+    <div class="download" onclick="baixarLivro(${l.id})">
+      ⬇ Baixar
+    </div>
+
+    <div style="text-align:center;">
+      ${[1,2,3,4,5].map(n=>`
+        <span onclick="avaliar(${l.id},${n})">⭐</span>
+      `).join("")}
+    </div>
+  </div>`;
+}
+
+function buscar(){
+  let termo=busca.value.toLowerCase();
+
+  let filtrados=Object.values(livrosMap).filter(l=>{
+    let txt=(l.titulo+l.autor+l.genero+l.publico).toLowerCase();
+    return txt.includes(termo);
+  });
+
+  render(filtrados);
+}
+
+function carregar(){
+  if(cache.lista){
+    cache.lista.forEach(l=>livrosMap[l.id]=l);
+    render(cache.lista);
+  }
+
+  db.ref("livros").on("value",snap=>{
+    let lista=[];
+
+    snap.forEach(i=>{
+      let l=i.val();
+      lista.push(l);
+      livrosMap[l.id]=l;
+    });
+
+    lista.sort((a,b)=>score(b)-score(a));
+
+    localStorage.setItem("cache",JSON.stringify({lista}));
+
+    render(lista);
+  });
+}
+
+function render(lista){
+  document.getElementById("lista").innerHTML=
+    lista.map((l,i)=>card(l,i)).join("");
+}
+
+carregar();
+</script>
+
+</body>
+</html>
